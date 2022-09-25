@@ -1,0 +1,296 @@
+---
+title: "Covid_analysis"
+author: "Aparna Devi Akula"
+output: pdf_document
+---
+In this project we are going to determine the below questions,
+The total number of Covid cases and deaths in the US?
+Covid effect on the state New York.
+What are the best and wrost states in The Us based on the death cases.
+How did Covid effect Airport Traffic in the US?
+
+We are considering https://github.com/nytimes/covid-19-data and [Johns Hopkins University] https://github.com/CSSEGISandData/COVID-19 github site -->
+The primary data published here are the daily cumulative number of cases and deaths reported in each county and state across the U.S. since the beginning of the pandemic. 
+
+Airport traffic data from https://raw.githubusercontent.com/AparnaAkula01/Covid_Analysis/main/covid_impact_on_airport_traffic.csv 
+This dataset shows traffic to and from the Airport as a Percentage of the Traffic volume during the baseline period. The baseline period used for computing this metric is from 1st Feb to 15th March 2020. The dataset gets updated daily.
+
+
+Importing the required libraries
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(lubridate)
+library(tinytex)
+```
+
+## Import data
+
+Import the data from the four main csv files.
+```{r import data}
+url_in <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/csse_covid_19_time_series/time_series_covid19_"
+file_names <- c("confirmed_global.csv",
+                    "deaths_global.csv",
+                    "confirmed_US.csv",
+                    "deaths_US.csv")
+urls <- str_c(url_in,file_names)
+```
+
+Reading in the data.
+```{r read in data}
+global_cases <- read_csv(urls[1], show_col_types = FALSE)
+global_deaths <- read_csv(urls[2], show_col_types = FALSE) 
+US_cases <- read_csv(urls[3], show_col_types = FALSE)
+US_deaths <- read_csv(urls[4], show_col_types = FALSE)
+```
+
+Tidying global_cases and global_deaths data, Also we don't need Lat, Long for our analysis so remove those columns; Rename Region and State.
+```{r clean global cases, global deaths}
+global_cases <- global_cases %>%
+    pivot_longer(cols = -c(`Province/State`, 
+                           `Country/Region`, Lat, Long),names_to = "date", 
+               values_to = "cases") %>%
+  dplyr::select(-c(Lat,Long))
+
+global_deaths <- global_deaths %>%
+  pivot_longer(cols = -c(`Province/State`,`Country/Region`,Lat, Long), names_to = "date",
+               values_to = "deaths") %>%
+  dplyr::select(-c(Lat,Long))
+
+global <- global_cases %>% 
+  full_join(global_deaths) %>%
+  rename(Country_Region = `Country/Region`,
+         Province_State = `Province/State`) %>%
+  mutate(date = mdy(date))
+
+summary(global)
+
+```
+
+Cases that are less than 0 are not considered, so filter is used
+```{r}
+global <- global %>% filter(cases>0)
+```
+
+Let's clean US_cases and US_deaths also. Use pivot_longer to lengthen the data by increasing the number of rows and decreasing the number of columns. Remove Lat and Long as these columns are not used in the analysis.
+```{r clean_US data (cases and deaths)}
+US_cases <- US_cases %>%
+  pivot_longer(cols = -(UID: Combined_Key), names_to = "date", values_to = "cases") %>%
+  dplyr::select(Admin2:cases) %>%
+  mutate(date = mdy(date)) %>%
+  dplyr::select(-c(Lat,Long_))
+
+US_deaths <- US_deaths %>%
+  pivot_longer(cols = -(UID: Population), names_to = "date", values_to = "deaths") %>%
+  dplyr::select(Admin2:deaths) %>%
+  mutate(date = mdy(date)) %>% 
+  dplyr::select(-c(Lat,Long_))
+
+# US contains case data and death data.
+US <- US_cases %>%
+  full_join(US_deaths)
+```
+
+Use unite to combine multiple columns by taking comma as separator
+```{r unite}
+global <- global %>% 
+  unite("Combined_Key",
+        c(Province_State, Country_Region), sep = ',', 
+        na.rm = TRUE, remove = FALSE)
+```
+
+Import population data to get more insight.
+```{r add population data}
+uid_lookup_url <- "https://raw.githubusercontent.com/CSSEGISandData/COVID-19/master/csse_covid_19_data/UID_ISO_FIPS_LookUp_Table.csv"
+uid <- read_csv(uid_lookup_url) %>%
+  select(-c(Lat, Long_, Combined_Key, code3, iso2, iso3, Admin2))
+```
+
+Merge the population data and global data using Left Join and remove UID and FIPS columns
+```{r merge population data}
+global <- global%>% 
+  left_join(uid, by = c("Province_State", "Country_Region")) %>%
+  dplyr::select(-c(UID,FIPS)) %>%
+  dplyr::select(Province_State, Country_Region, date,cases,deaths, Population,Combined_Key)
+global
+```
+
+## Visualisation
+
+How many number of cases are there per million in each state?
+```{r add cases_per_mil}
+US_by_state <- US %>% group_by (Province_State, Country_Region, date) %>% 
+  summarise(cases = sum(cases), deaths = sum(deaths), Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>% 
+  dplyr::select(Province_State, Country_Region, date, cases, deaths, deaths_per_mill, Population) %>% ungroup()
+```
+
+Similarly, let us find out deaths per million in each state.
+```{r add deaths_per_mil}
+US_totals <- US_by_state %>% group_by (Country_Region, date) %>% 
+  summarise(cases = sum(cases), deaths = sum(deaths), 
+  Population = sum(Population)) %>%
+  mutate(deaths_per_mill = deaths * 1000000 / Population) %>% 
+  dplyr::select(Country_Region, date, cases, deaths, deaths_per_mill, 
+  Population) %>% ungroup()
+```
+
+Graph displaying the total number of cases per million and the total number of deaths per million from January 2020 to July 2021
+```{r plot US}
+US_totals %>% filter(cases>0) %>% ggplot(aes(x = date, y = cases))+ 
+  geom_line(aes(color = "cases"))+
+  geom_point(aes(color ="cases")) + 
+  geom_line(aes(y = deaths, color = "deaths")) + 
+  geom_point(aes(y = deaths, color = "deaths")) + 
+  scale_y_log10() + theme(legend.position ="bottom") + 
+  labs(title = "Covid cases and deaths in US")
+```
+It can inferred from the graph that the cases in US are not increasing drastically.
+
+A Graph resulting in the total number of cases per million and the total number of deaths per million from January 2020 to July 2021 in the State of New York
+```{r plot New York}
+state <-"New York"
+US_by_state %>% filter(Province_State == state) %>% filter(cases > 0) %>% 
+  ggplot(aes(x = date, y = cases)) + geom_line(aes(color = "cases")) + 
+  geom_point(aes(color ="cases")) + geom_line(aes(y = deaths, color = "deaths"))+
+  geom_point(aes(y = deaths, color = "deaths")) +
+  scale_y_log10() + theme(legend.position ="bottom") + 
+  labs(title = str_c("Covid cases and deaths in ", state), y = NULL)
+```
+## Analyze the data 
+
+Look at the number of new cases and deaths per day.
+```{r find new_cases}
+US_by_state <- US_by_state %>% 
+  mutate(new_cases = cases - lag(cases), new_deaths = deaths - lag(deaths))
+US_totals <-US_totals %>% mutate(new_cases = cases - lag(cases),
+                                 new_deaths = deaths - lag(deaths))
+```
+
+Visualization of new_cases and new_deaths in the US.
+```{r visualise new_cases and new_deaths}
+US_totals %>% ggplot(aes(x = date, y = new_cases)) + geom_line(aes(color = "new_cases")) + 
+  geom_point(aes(color = "new_cases")) + geom_line(aes(y = new_deaths, color ="new_deaths")) + 
+  geom_point(aes(y = new_deaths, color = "new_deaths")) + scale_y_log10() + 
+  theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) + 
+  labs(title = "Covid19 in US", y= NULL)
+```
+
+Visualization of new_cases and new_deaths in New York state.
+```{r new_cases,new_deaths in New York}
+state <- "New York"
+US_by_state %>% filter(Province_State == state) %>% ggplot(aes(x = date, y = new_cases)) +
+  geom_line(aes(color = "new_cases")) + geom_point(aes(color = "new_cases")) + 
+  geom_line(aes(y = new_deaths, color ="new_deaths"))+ geom_point(aes(y = new_deaths, 
+                                                                      color = "new_deaths"))+
+  scale_y_log10() + theme(legend.position = "bottom", axis.text.x = element_text(angle = 90)) +
+  labs(title = str_c("Covid19 in ",state), y= NULL)
+```
+What are worst states and the best states ?
+```{r best_states}
+US_state_totals <- US_by_state %>% 
+  group_by(Province_State) %>%
+  summarize(deaths = max(deaths), cases = max(cases),
+            population = max(Population), 
+            cases_per_thou = 1000* cases / population,
+            deaths_per_thou = 1000 * deaths / population) %>% 
+  filter(cases > 0, population > 0) 
+US_state_totals %>% slice_min(deaths_per_thou, n = 10)
+```
+```{r worst_states}
+US_state_totals %>% slice_max(deaths_per_thou, n = 10)
+```
+
+## Model the data
+
+Creating a Linear Model for the data.
+```{r}
+mod <- lm(deaths_per_thou ~ cases_per_thou, data = US_state_totals)
+summary(mod)
+```
+
+```{r}
+x_grid <- seq(1, 151)
+new_df <- tibble(cases_per_thou = x_grid)
+US_state_totals %>% mutate(pred = predict(mod))
+```
+
+Considering Prediction Analysis.
+```{r prediction with actual data}
+US_tot_w_pred <- US_state_totals %>% mutate(pred = predict(mod))
+US_tot_w_pred %>% ggplot() +
+geom_point(aes(x = cases_per_thou, y = deaths_per_thou), color = "blue") + 
+  geom_text(aes(x =cases_per_thou,y = deaths_per_thou,
+                label = ifelse(deaths_per_thou>quantile(deaths_per_thou, 0.95) ,
+                               Province_State,'')),vjust = 1.5,hjust = 0) +  
+  geom_text(aes(x=cases_per_thou, y =deaths_per_thou,
+                label = ifelse(deaths_per_thou<1,Province_State,'')),vjust = 1.5) + 
+geom_point(aes(x = cases_per_thou, y = pred), color = "red")
+```
+From the above scatter plot Utah and Alaska are performing better than new jersey, Mississippi and Louisiana.
+
+To find out the deaths because of Covid in each state we can measure deaths/cases 
+```{r add_deaths_per_cases}
+US_state_totals <- US_state_totals %>% mutate(death_per_cases = deaths/cases)
+glimpse(US_state_totals)
+```
+Let us model the data again.
+```{r model new data}
+mod1 <- lm(death_per_cases ~ cases_per_thou, data = US_state_totals)
+summary(mod1)
+```
+##Extension
+
+Loading Airport Traffic dataset to compare with covid analysis
+```{r}
+airporttraffic <- read_csv("https://raw.githubusercontent.com/AparnaAkula01/Covid_Analysis/main/covid_impact_on_airport_traffic.csv")
+airporttraffic = rename(airporttraffic,Province_State = State)
+glimpse(airporttraffic)
+```
+
+Joining Airport Traffic dataset and Covid dataset
+```{r join}
+Covid_Airport_Traffic <- full_join(US_state_totals,airporttraffic,"Province_State")
+glimpse(Covid_Airport_Traffic)
+```
+
+Proportion of trips on this date as compared to Avg number of trips on the same day of week in baseline period i.e 1st
+
+Flow of US Airport_Traffic in the period 2020
+```{r}
+Covid_Airport_Traffic %>% ggplot(aes(x = Date, y = PercentOfBaseline))+
+  geom_smooth(aes(y = PercentOfBaseline, color = "PercentOfBaseline")) 
+```
+Proportion of Trips taken by people of Colorado during Covid - 2020
+```{r}
+ggplot(data = Covid_Airport_Traffic %>% filter(Province_State == "Colorado")) + 
+  geom_point(aes(x = Date,y = PercentOfBaseline), color = "blue") + 
+  xlab("Month - 2020") + ylab("Proportion of trips")+ 
+  ggtitle("Number of trips taken by people of Colorado during Covid - 2020") + 
+  geom_smooth(aes(x = Date,y = PercentOfBaseline))
+```
+A Linear Model to determine the realtionship between the variables.
+```{r}
+Model2 <- lm(cases~PercentOfBaseline, data = Covid_Airport_Traffic)
+summary(Model2)
+```
+
+## Conclusions 
+
+* Nebraska, Utah and Alaska have handled the pandemic in a better way because the cases and population are   more in these ares yet they managed to have less number of deaths.
+* New jersey, New York and Massachusetts are the worst states to handle the pandemic because there are      more number of deaths with respective to cases
+* We can see that Airport traffic is effected due to Covid, In February and March the traffic is heavy      whereas in April and May there is sudden fall in the Airport Traffic.
+* From June we can see gradual rise in the Airport Traffic, while coming to the end of the year again it    started to decrease.
+* The Airport Traffic in Colorado is almost proportional to US.
+
+## Biases
+
+* I did not consider pre existing conditions.
+* Some of the data may be incorrect, like all the people who are dead during the pandemic may not be dead   due to covid itself there may be some other reasons 
+* While doing Airport Traffic analysis, I considered Colorado because I live in Colorado
+
+```{r}
+sessionInfo()
+```
+
+
